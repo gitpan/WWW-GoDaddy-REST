@@ -3,6 +3,8 @@ package WWW::GoDaddy::REST::Resource;
 use Carp;
 use List::MoreUtils qw( natatime );
 use Moose;
+use URI;
+use URI::QueryParam;
 use WWW::GoDaddy::REST::Util qw( abs_url json_instance json_encode json_decode is_json );
 
 use constant DEFAULT_IMPL_CLASS => 'WWW::GoDaddy::REST::Resource';
@@ -58,8 +60,19 @@ sub do_action {
 
     my $action_url = $self->action($action);
     if ( !$action_url ) {
-        my @valid_actions = keys %{ $self->actions() };
-        croak("$action is not a valid action name.  Did you mean one of these? @valid_actions");
+        if($self->id) {
+            # try and find an action in the schema as fallback
+            my $schema = $self->schema();
+            my $resource_actions = $schema->f('resourceActions') || {};
+            if( exists $resource_actions->{$action} ) {
+                my $self_uri = URI->new($self->link('self') || $schema->query_url( $self->id ));
+                $self_uri->query("$action");
+                $action_url = "$self_uri";
+            }
+        }
+        if( !$action_url ) {
+            croak("$action is not a valid action name.");
+        }
     }
 
     return $self->client->http_request_as_resource( 'POST', $action_url, $params );
@@ -79,6 +92,10 @@ sub type {
     return shift->f('type');
 }
 
+sub resource_type {
+    return shift->f('resourceType');
+}
+
 sub type_fq {
     my $self = shift;
 
@@ -87,9 +104,20 @@ sub type_fq {
     return abs_url( $base_url, $self->type );
 }
 
+sub resource_type_fq {
+    my $self = shift;
+
+    return unless $self->resource_type;
+
+    return abs_url( $self->schemas_url, $self->resource_type );
+}
+
 sub schema {
     my $self = shift;
-    my $schema = $self->client->schema( $self->type_fq ) || $self->client->schema( $self->type );
+    my $schema 
+        = $self->client->schema( $self->resource_type_fq )
+        || $self->client->schema( $self->type_fq )
+        || $self->client->schema( $self->type );
     return $schema;
 }
 
@@ -120,7 +148,7 @@ sub action {
 }
 
 sub actions {
-    return shift->f('actions');
+    return shift->f('actions') || {};
 }
 
 sub f {
@@ -132,7 +160,15 @@ sub f_as_resources {
     my $field    = shift;
     my $raw_data = $self->f($field);
 
-    my ( $container, $type ) = $self->schema->resource_field_type($field);
+    my ( $container, $type );
+
+    # if the 'field' is data, skip detection and use the resource type
+    if ( $field eq 'data' ) {
+        ( $container, $type ) = ( 'array', $self->resource_type );
+    }
+    else {
+        ( $container, $type ) = $self->schema->resource_field_type($field);
+    }
     my %defaults = (
         client        => $self->client,
         http_response => $self->http_response
@@ -510,6 +546,14 @@ Return the name of the schema type that this object belongs to.
 =item type_fq
 
 Return the full URI to the schema type that this object belongs to.
+
+=item resource_type
+
+Return the name of the schema type that this collection's objects belong to.
+
+=item resource_type_fq
+
+Return the full URI to the schema type that this collection's objects belong to.
 
 =item schemas_url
 

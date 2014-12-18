@@ -27,6 +27,9 @@ $lwp_mock->mock(
         my $echoResponse = {
             'id'                     => 'echo',
             'type'                   => 'echoResponse',
+            'child_resource'         => {
+                'id' => 'child'
+            },
             'request_method'         => $request->method,
             'request_uri'            => $url,
             'request_content'        => $content_json,
@@ -46,7 +49,7 @@ $lwp_mock->mock(
         elsif ( $request->uri->path =~ m|^/v1/respondNonResource| ) {
             $content = $content_json;
         }
-        elsif ( $request->uri->path =~ m|^/v1/echoResponses/*$| ) {
+        elsif ( $request->uri->path =~ m|^/v1/echoResponses/?$| ) {
 
             # collection
             $content = {
@@ -67,10 +70,15 @@ $lwp_mock->mock(
             }
             $content = json_encode($content);
         }
+        elsif ( $request->uri->path =~ m|^/v1/echoResponseChildren/(.*)$| ) {
+            $echoResponse->{id} = $1;
+            $content = json_encode($echoResponse);
+        }
         else {
             if ( $url =~ m|^http://example.com/v1/echoResponses/(.*)$| ) {
                 $echoResponse->{id} = $1;
             }
+
             $content = json_encode($echoResponse);
         }
 
@@ -89,9 +97,15 @@ my $client = WWW::GoDaddy::REST->new(
 
 subtest 'query_by_id' => sub {
     my $response = $client->query_by_id( 'echoResponse', '1234' );
-    is( $response->f('request_method'), "GET", "requested method is good" );
-    is( $response->f('request_uri'), "$URL_BASE/echoResponses/1234", "requested URI is good" );
-    is( $response->f('request_content'), '', "requested content is empty" );
+    is( $response->f('request_method'), "GET", "id only: requested method is good" );
+    is( $response->f('request_uri'), "$URL_BASE/echoResponses/1234", "id only: requested URI is good" );
+    is( $response->f('request_content'), '', "id only: requested content is empty" );
+
+    $response = $client->query_by_id( 'echoResponse', '1234', { showAccounts => 'true' } );
+    is( $response->f('request_method'), "GET", "complex: requested method is good" );
+    is( $response->f('request_uri'), "$URL_BASE/echoResponses/1234?showAccounts=true", "complex: requested URI is good" );
+    is( $response->f('request_content'), '', "complex: requested content is empty" );
+
 };
 
 subtest 'query' => sub {
@@ -106,9 +120,35 @@ subtest 'query' => sub {
     my @items = $client->query( 'echoResponse', { 'name' => 'bar' } );
     ($item) = @items;
     is( $item->type,                'echoResponse', 'correct item type returned' );
-    is( $item->f('request_method'), "GET",          "requested method is good" );
-    is( $item->f('request_uri'), "$URL_BASE/echoResponses?name=bar", "requested URI is good" );
-    is( $item->f('request_content'), '', "requested content is empty" );
+    is( $item->f('request_method'), "GET",          "complex: requested method is good" );
+    is( $item->f('request_uri'), "$URL_BASE/echoResponses?name=bar", "complex: requested URI is good" );
+    is( $item->f('request_content'), '', "complex: requested content is empty" );
+
+    $item = $client->query( 'echoResponse', '1234' );
+    is( $item->f('request_method'), "GET", "id only: requested method is good" );
+    is( $item->f('request_uri'), "$URL_BASE/echoResponses/1234", "id only: requested URI is good" );
+    is( $item->f('request_content'), '', "id only: requested content is empty" );
+
+    $item = $client->query( 'echoResponse', '1234', { showAccounts => 'true' } );
+    is( $item->f('request_method'), "GET", "id + extra: requested method is good" );
+    is( $item->f('request_uri'), "$URL_BASE/echoResponses/1234?showAccounts=true", "id + extra: requested URI is good" );
+    is( $item->f('request_content'), '', "id + extra: requested content is empty" );
+
+    my $id = '123';
+    @items = $client->query(
+        'echoResponse',
+        {   'id'           => $id,
+            'showAccounts' => [
+                { 'value' => 'true' }    # implicit 'eq'
+            ],
+        }
+    );
+    ($item) = @items;
+    is( $item->type,                'echoResponse', 'complex 2: correct item type returned' );
+    is( $item->f('request_method'), "GET",          "complex 2: requested method is good" );
+    is( $item->f('request_uri'), sprintf( '%s/echoResponses?id=123&showAccounts=true', $URL_BASE, $id ), "complex 2: requested URI is good" );
+    is( $item->f('request_content'), '', "complex 2: requested content is empty" );
+
 };
 
 subtest 'non resource responding' => sub {
@@ -193,6 +233,19 @@ subtest 'do_action' => sub {
     );
     is( $done3->f('request_content'),        '"3"', 'action request content is present' );
     is( $done3->f('request_content_struct'), '3',   'perl data struct is correct' );
+
+    my $child = $response->f_as_resources('child_resource');
+    is( $child->id, 'child', 'child resource id matches' );
+    is( $child->type, 'echoResponseChild', 'child resource type matches' );
+    my $done4 = $child->do_action( 'exampleAction', {} );
+    is( $done4->f('request_method'), 'POST', 'action http method is POST' );
+    is( $done4->f('request_uri'),
+        'http://example.com/v1/echoResponseChildren/child?exampleAction',
+        'action url is correct'
+    );
+
+    dies_ok { $response->do_action( 'noExiste' ) } 'no action in fields or schema';
+
 };
 
 done_testing();
